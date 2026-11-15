@@ -1,0 +1,1454 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La mesure du temps - Aventure Mathématique</title>
+    
+    <!-- Polices -->
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800;900&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Nunito', 'sans-serif'],
+                    },
+                    colors: {
+                        primaire: '#4F46E5', // Indigo 600
+                        secondaire: '#10B981', // Emerald 500
+                        accent: '#F59E0B', // Amber 500
+                        fond: '#F0FDF4', // Green 50
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body {
+            background-color: #F0FDFA;
+            background-image: radial-gradient(#CFFAFE 2px, transparent 2px);
+            background-size: 30px 30px;
+        }
+        
+        /* Animations */
+        @keyframes pop {
+            0% { transform: scale(0.9); opacity: 0; }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop {
+            animation: pop 0.4s ease-out forwards;
+        }
+        /* Animation de tracé des bonds complets sur la ligne du temps */
+        @keyframes drawArc {
+            from { stroke-dashoffset: 100; }
+            to { stroke-dashoffset: 0; }
+        }
+        .animate-arc {
+            stroke-dasharray: 100;
+            stroke-dashoffset: 0;
+            animation: drawArc 0.45s ease-out forwards;
+        }
+
+        /* Masquer les flèches des inputs number */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+    </style>
+</head>
+<body class="p-2 md:p-6 text-gray-800 antialiased selection:bg-indigo-200">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // --- COMPOSANTS UI GÉNÉRAUX ---
+
+        const Card = ({ children, className = "" }) => (
+            <div className={`bg-white rounded-3xl shadow-xl p-6 border-2 border-indigo-50 ${className}`}>
+                {children}
+            </div>
+        );
+
+        const Button = ({ children, onClick, variant = 'primary', disabled = false, className = "" }) => {
+            const variants = {
+                primary: 'bg-primaire hover:bg-indigo-700 text-white shadow-indigo-200',
+                success: 'bg-secondaire hover:bg-emerald-600 text-white shadow-emerald-200',
+                accent: 'bg-accent hover:bg-amber-600 text-white shadow-amber-200',
+                outline: 'bg-white hover:bg-gray-50 text-gray-700 border-2 border-gray-200 shadow-gray-100'
+            };
+
+            return (
+                <button
+                    onClick={onClick}
+                    disabled={disabled}
+                    className={`font-extrabold rounded-2xl px-6 py-3 shadow-lg transition-all transform active:scale-95 disabled:opacity-40 disabled:pointer-events-none flex items-center justify-center gap-2 ${variants[variant]} ${className}`}
+                >
+                    {children}
+                </button>
+            );
+        };
+
+        const InputNum = ({ value, onChange, placeholder = "0", w = "w-24" }) => (
+            <input
+                type="number"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder={placeholder}
+                className={`${w} h-14 text-center text-2xl font-black text-primaire bg-white border-4 border-indigo-200 rounded-2xl focus:border-primaire focus:outline-none shadow-inner transition-colors`}
+            />
+        );
+
+        const Feedback = ({ status }) => {
+            if (status === 'idle') return null;
+
+            if (status === 'correct') {
+                return (
+                    <div className="mt-4 bg-emerald-100 border-2 border-secondaire text-emerald-900 px-5 py-3 rounded-2xl font-extrabold flex items-center gap-3 animate-pop shadow-sm">
+                        <span className="text-2xl">✅</span>
+                        <span>Bravo ! C'est exactement la bonne réponse ! Continue comme ça !</span>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="mt-4 bg-rose-100 border-2 border-rose-500 text-rose-900 px-5 py-3 rounded-2xl font-extrabold flex items-center gap-3 animate-pop shadow-sm">
+                    <span className="text-2xl">❌</span>
+                    <span>Oups ! Ce n'est pas tout à fait ça. Regarde bien les bonds ou manipule l'horloge et essaie encore !</span>
+                </div>
+            );
+        };
+
+        // --- COMPOSANT HORLOGE INTERACTIVE TACTILE ---
+
+        const Horloge = ({ hours, minutes, onTimeChange, interactive = true }) => {
+            const svgRef = useRef(null);
+            const [isDragging, setIsDragging] = useState(false);
+            const prevMinutesRef = useRef(minutes);
+
+            useEffect(() => {
+                prevMinutesRef.current = minutes;
+            }, [minutes]);
+
+            const calculateTimeFromPointer = (clientX, clientY) => {
+                if (!svgRef.current || !interactive) return;
+                const rect = svgRef.current.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const dx = clientX - cx;
+                const dy = clientY - cy;
+
+                // Angle en degrés (0° en haut sur le 12, sens horaire)
+                let angle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
+                if (angle < 0) angle += 360;
+
+                const newMinutes = Math.round(angle / 6) % 60;
+                const prevM = prevMinutesRef.current;
+
+                // Détection du passage par le 12 (changement d'heure automatique)
+                let newHours = hours;
+                if (prevM > 45 && newMinutes < 15) {
+                    newHours = hours === 12 ? 1 : hours + 1;
+                } else if (prevM < 15 && newMinutes > 45) {
+                    newHours = hours === 1 ? 12 : hours - 1;
+                }
+
+                prevMinutesRef.current = newMinutes;
+                onTimeChange(newHours, newMinutes);
+            };
+
+            const handlePointerDown = (e) => {
+                if (!interactive) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                setIsDragging(true);
+                calculateTimeFromPointer(e.clientX, e.clientY);
+            };
+
+            const handlePointerMove = (e) => {
+                if (!isDragging || !interactive) return;
+                calculateTimeFromPointer(e.clientX, e.clientY);
+            };
+
+            const handlePointerUp = (e) => {
+                if (!isDragging) return;
+                setIsDragging(false);
+                try {
+                    e.currentTarget.releasePointerCapture(e.pointerId);
+                } catch (err) {}
+            };
+
+            const adjustTime = (deltaH, deltaM) => {
+                let totalM = hours * 60 + minutes + deltaH * 60 + deltaM;
+                while (totalM < 0) totalM += 720;
+                totalM = totalM % 720;
+                let finalH = Math.floor(totalM / 60);
+                if (finalH === 0) finalH = 12;
+                const finalM = totalM % 60;
+                onTimeChange(finalH, finalM);
+            };
+
+            // Angles des aiguilles
+            const minuteAngle = minutes * 6;
+            const hourAngle = ((hours % 12) + minutes / 60) * 30;
+
+            return (
+                <div className="flex flex-col items-center select-none w-full">
+                    <div className="relative w-64 h-64 sm:w-72 sm:h-72">
+                        <svg
+                            ref={svgRef}
+                            viewBox="0 0 240 240"
+                            onPointerDown={handlePointerDown}
+                            onPointerMove={handlePointerMove}
+                            onPointerUp={handlePointerUp}
+                            className={`w-full h-full drop-shadow-xl ${interactive ? 'cursor-grab active:cursor-grabbing touch-none' : ''}`}
+                        >
+                            {/* Boîtier extérieur */}
+                            <circle cx="120" cy="120" r="114" fill="#4F46E5" />
+                            <circle cx="120" cy="120" r="104" fill="#FFFFFF" stroke="#E0E7FF" strokeWidth="4" />
+
+                            {/* Graduations des 60 minutes */}
+                            {Array.from({ length: 60 }).map((_, i) => {
+                                const isHour = i % 5 === 0;
+                                const angle = i * 6;
+                                return (
+                                    <line
+                                        key={i}
+                                        x1="120"
+                                        y1={isHour ? "20" : "22"}
+                                        x2="120"
+                                        y2={isHour ? "32" : "27"}
+                                        stroke={isHour ? "#4F46E5" : "#CBD5E1"}
+                                        strokeWidth={isHour ? "3.5" : "1.5"}
+                                        strokeLinecap="round"
+                                        transform={`rotate(${angle} 120 120)`}
+                                    />
+                                );
+                            })}
+
+                            {/* Chiffres des heures (1 à 12) */}
+                            {Array.from({ length: 12 }).map((_, i) => {
+                                const num = i === 0 ? 12 : i;
+                                const rad = (i * 30 - 90) * (Math.PI / 180);
+                                const x = 120 + 76 * Math.cos(rad);
+                                const y = 120 + 76 * Math.sin(rad);
+                                return (
+                                    <text
+                                        key={num}
+                                        x={x}
+                                        y={y}
+                                        textAnchor="middle"
+                                        dominantBaseline="central"
+                                        fill="#1E1B4B"
+                                        fontSize="18"
+                                        fontWeight="900"
+                                    >
+                                        {num}
+                                    </text>
+                                );
+                            })}
+
+                            {/* Petite aiguille (Heures - Rouge) */}
+                            <g transform={`rotate(${hourAngle} 120 120)`}>
+                                <line
+                                    x1="120"
+                                    y1="120"
+                                    x2="120"
+                                    y2="68"
+                                    stroke="#EF4444"
+                                    strokeWidth="7"
+                                    strokeLinecap="round"
+                                />
+                            </g>
+
+                            {/* Grande aiguille (Minutes - Bleue) */}
+                            <g transform={`rotate(${minuteAngle} 120 120)`}>
+                                <line
+                                    x1="120"
+                                    y1="120"
+                                    x2="120"
+                                    y2="36"
+                                    stroke="#2563EB"
+                                    strokeWidth="5"
+                                    strokeLinecap="round"
+                                />
+                                {/* Poignée tactile au bout de la grande aiguille */}
+                                {interactive && (
+                                    <circle
+                                        cx="120"
+                                        cy="42"
+                                        r="9"
+                                        fill="#3B82F6"
+                                        fillOpacity="0.35"
+                                        stroke="#2563EB"
+                                        strokeWidth="2"
+                                    />
+                                )}
+                            </g>
+
+                            {/* Pivot central */}
+                            <circle cx="120" cy="120" r="8" fill="#F59E0B" stroke="#FFFFFF" strokeWidth="2.5" />
+                        </svg>
+                    </div>
+
+                    {/* Affichage numérique synchronisé */}
+                    <div className="mt-4 bg-gray-900 text-emerald-400 font-mono text-3xl font-black px-6 py-2 rounded-2xl shadow-inner border-4 border-gray-700 tracking-widest">
+                        {String(hours).padStart(2, '0')}:{String(minutes).padStart(2, '0')}
+                    </div>
+
+                    {/* Boutons d'ajustement rapide par bonds */}
+                    {interactive && (
+                        <div className="flex flex-wrap justify-center gap-2 mt-4">
+                            <button
+                                onClick={() => adjustTime(-1, 0)}
+                                className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-800 font-extrabold rounded-xl text-sm transition-colors"
+                            >
+                                -1 h
+                            </button>
+                            <button
+                                onClick={() => adjustTime(1, 0)}
+                                className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-800 font-extrabold rounded-xl text-sm transition-colors"
+                            >
+                                +1 h
+                            </button>
+                            <button
+                                onClick={() => adjustTime(0, -5)}
+                                className="px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-800 font-extrabold rounded-xl text-sm transition-colors"
+                            >
+                                -5 min
+                            </button>
+                            <button
+                                onClick={() => adjustTime(0, 5)}
+                                className="px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-800 font-extrabold rounded-xl text-sm transition-colors"
+                            >
+                                +5 min
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // --- ONGLET 1 : EXPLICATIONS, VOCABULAIRE, QUIZ & COURRIER DES ÉLÈVES ---
+
+        const QUIZ_VOCABULAIRE = [
+            {
+                q: "Quelle aiguille indique les heures sur une horloge ?",
+                options: ["La petite aiguille", "La grande aiguille", "La trotteuse"],
+                ans: 0
+            },
+            {
+                q: "Comment appelle-t-on le temps qui s'écoule entre le début et la fin d'un évènement ?",
+                options: ["L'horloge", "La durée", "La trotteuse"],
+                ans: 1
+            },
+            {
+                q: "Combien y a-t-il de minutes dans 1 heure ?",
+                options: ["100 minutes", "30 minutes", "60 minutes"],
+                ans: 2
+            },
+            {
+                q: "Quelle aiguille avance très vite pour compter les secondes ?",
+                options: ["La petite aiguille", "La trotteuse", "La grande aiguille"],
+                ans: 1
+            }
+        ];
+
+        const FAQ_ELEVES = [
+            {
+                question: "« Pour ma table du 7, je me mélange tout le temps avec 7×6 et 7×7 car je pense que 7×7 = 42, mais ce n'est pas la bonne réponse... »",
+                explication: "Astuce magique : 7 × 6 = 42 (pense à 6 semaines = 42 jours !). Pour trouver 7 × 7, tu ajoutes simplement 7 de plus : 42 + 7 = 49 ! Tu peux aussi retenir que 7 × 7 rime avec « quarante-neuf, c'est tout neuf ! »."
+            },
+            {
+                question: "« J'oublie tout le temps les tables de 7 et 8, je les répète plusieurs fois et je ne m'en rappelle toujours pas. Que puis-je faire ? »",
+                explication: "Au lieu de tout apprendre par cœur d'un coup, utilise des points de repère ! Par exemple, pour la table de 8, double trois fois (×2, ×2, ×2). Pour 8 × 6 : le double de 6 est 12, le double de 12 est 24, et le double de 24 est 48 ! Et n'oublie pas que 5, 6, 7, 8 se suivent : 56 = 7 × 8 !"
+            },
+            {
+                question: "« Dans Météormath 2, quand je dois écrire 8×3 = 24, j'écris le 2 sans avoir le temps de mettre le 4 et j'ai la mauvaise réponse. Comment je fais ? »",
+                explication: "Garde toujours les deux mains prêtes sur le clavier avant de commencer à taper ! Calcule d'abord tout le nombre dans ta tête (24), puis tape les deux chiffres d'un seul coup rapide (« 2-4 ») plutôt que de taper le 2 pendant que tu réfléchis encore au 4."
+            }
+        ];
+
+        const TabExplication = () => {
+            const [quizAnswers, setQuizAnswers] = useState({});
+            const [openFaq, setOpenFaq] = useState(0);
+
+            const handleSelectQuiz = (qIdx, optIdx) => {
+                setQuizAnswers({ ...quizAnswers, [qIdx]: optIdx });
+            };
+
+            return (
+                <div className="space-y-8 animate-pop">
+                    <div className="text-center">
+                        <h2 className="text-4xl font-black text-primaire mb-3">Comprendre la Mesure du Temps 📖</h2>
+                        <p className="text-xl text-gray-600">Découvre les secrets des horloges et des unités de temps !</p>
+                    </div>
+
+                    {/* Fiches théoriques colorées */}
+                    <div className="grid md:grid-cols-2 gap-6">
+                        <Card className="bg-indigo-50/70 border-indigo-200">
+                            <h3 className="text-2xl font-black text-primaire mb-3 flex items-center gap-2">
+                                <span>⏳</span> Les unités de mesure du temps
+                            </h3>
+                            <p className="text-gray-700 font-semibold mb-4">
+                                Pour mesurer le temps, on utilise différentes unités selon que l'évènement est court ou long :
+                            </p>
+                            <div className="grid grid-cols-2 gap-3 text-sm sm:text-base font-bold">
+                                <div className="bg-white p-3 rounded-2xl shadow-sm border border-indigo-100">⏱️ 1 minute = <span className="text-primaire">60 secondes</span></div>
+                                <div className="bg-white p-3 rounded-2xl shadow-sm border border-indigo-100">🕐 1 heure = <span className="text-primaire">60 minutes</span></div>
+                                <div className="bg-white p-3 rounded-2xl shadow-sm border border-indigo-100">☀️ 1 jour = <span className="text-primaire">24 heures</span></div>
+                                <div className="bg-white p-3 rounded-2xl shadow-sm border border-indigo-100">📅 1 semaine = <span className="text-primaire">7 jours</span></div>
+                                <div className="bg-white p-3 rounded-2xl shadow-sm border border-indigo-100 col-span-2 text-center">🌍 1 année = <span className="text-primaire">12 mois</span> (ou 365 jours)</div>
+                            </div>
+                        </Card>
+
+                        <Card className="bg-emerald-50/70 border-emerald-200">
+                            <h3 className="text-2xl font-black text-secondaire mb-3 flex items-center gap-2">
+                                <span>🕰️</span> L'horloge et ses aiguilles
+                            </h3>
+                            <p className="text-gray-700 font-semibold mb-3">
+                                Une <strong>horloge</strong> est un outil qui indique les heures, les minutes et les secondes grâce à trois aiguilles :
+                            </p>
+                            <ul className="space-y-2.5 font-bold text-gray-800">
+                                <li className="bg-white p-3 rounded-2xl shadow-sm flex items-center gap-3">
+                                    <span className="w-4 h-4 rounded-full bg-red-500 inline-block shrink-0"></span>
+                                    <span><strong>La petite aiguille :</strong> indique les <u>heures</u>.</span>
+                                </li>
+                                <li className="bg-white p-3 rounded-2xl shadow-sm flex items-center gap-3">
+                                    <span className="w-4 h-4 rounded-full bg-blue-600 inline-block shrink-0"></span>
+                                    <span><strong>La grande aiguille :</strong> indique les <u>minutes</u> (on compte par bonds de 5 !).</span>
+                                </li>
+                                <li className="bg-white p-3 rounded-2xl shadow-sm flex items-center gap-3">
+                                    <span className="w-4 h-4 rounded-full bg-amber-500 inline-block shrink-0"></span>
+                                    <span><strong>La trotteuse :</strong> aiguille fine qui indique les <u>secondes</u>.</span>
+                                </li>
+                            </ul>
+                        </Card>
+
+                        <Card className="bg-amber-50/70 border-amber-200">
+                            <h3 className="text-2xl font-black text-amber-700 mb-3 flex items-center gap-2">
+                                <span>🔄</span> La conversion des unités
+                            </h3>
+                            <p className="text-gray-700 font-semibold leading-relaxed">
+                                Pour convertir une unité de temps dans une autre, on utilise l'<strong>équivalence</strong> entre elles (par exemple : 1 h = 60 min).
+                                <br /><br />
+                                <span className="bg-white px-3 py-1.5 rounded-xl border border-amber-200 inline-block font-extrabold text-amber-900">
+                                    Exemple : 1 h 30 min = 60 min + 30 min = 90 minutes !
+                                </span>
+                            </p>
+                        </Card>
+
+                        <Card className="bg-purple-50/70 border-purple-200">
+                            <h3 className="text-2xl font-black text-purple-700 mb-3 flex items-center gap-2">
+                                <span>⏱️</span> La durée d'un évènement
+                            </h3>
+                            <p className="text-gray-700 font-semibold leading-relaxed">
+                                La <strong>durée</strong> d'un évènement est le temps qui s'écoule entre son <strong>début</strong> et sa <strong>fin</strong>.
+                                <br /><br />
+                                <span className="bg-white px-3 py-1.5 rounded-xl border border-purple-200 inline-block font-extrabold text-purple-900">
+                                    Astuce : Utilise une ligne du temps et fais des bonds !
+                                </span>
+                            </p>
+                        </Card>
+                    </div>
+
+                    {/* Mini-Quiz Vocabulaire */}
+                    <Card className="border-2 border-indigo-200 bg-gradient-to-br from-white to-indigo-50">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-2xl font-black text-primaire">🎯 Vérifie ton vocabulaire !</h3>
+                            {Object.keys(quizAnswers).length > 0 && (
+                                <button
+                                    onClick={() => setQuizAnswers({})}
+                                    className="text-sm font-bold px-4 py-1.5 rounded-full bg-white border border-gray-200 text-gray-600 hover:bg-gray-100"
+                                >
+                                    ↺ Recommencer le quiz
+                                </button>
+                            )}
+                        </div>
+
+                        <div className="grid md:grid-cols-2 gap-6">
+                            {QUIZ_VOCABULAIRE.map((item, qIdx) => {
+                                const userChoice = quizAnswers[qIdx];
+                                const hasAnswered = userChoice !== undefined;
+                                return (
+                                    <div key={qIdx} className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+                                        <p className="font-extrabold text-gray-800 mb-3">{qIdx + 1}. {item.q}</p>
+                                        <div className="space-y-2">
+                                            {item.options.map((opt, optIdx) => {
+                                                let btnStyle = "bg-gray-50 hover:bg-indigo-50 text-gray-700 border-gray-200";
+                                                if (hasAnswered) {
+                                                    if (optIdx === item.ans) {
+                                                        btnStyle = "bg-emerald-100 border-secondaire text-emerald-900 font-black";
+                                                    } else if (optIdx === userChoice) {
+                                                        btnStyle = "bg-rose-100 border-rose-500 text-rose-900 font-black";
+                                                    }
+                                                }
+                                                return (
+                                                    <button
+                                                        key={optIdx}
+                                                        onClick={() => handleSelectQuiz(qIdx, optIdx)}
+                                                        className={`w-full text-left px-4 py-2.5 rounded-xl border-2 font-bold transition-all flex justify-between items-center ${btnStyle}`}
+                                                    >
+                                                        <span>{opt}</span>
+                                                        {hasAnswered && optIdx === item.ans && <span>✅</span>}
+                                                        {hasAnswered && optIdx === userChoice && optIdx !== item.ans && <span>❌</span>}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </Card>
+
+                    {/* Courrier des élèves (Questions sur les tables & calcul mental) */}
+                    <Card className="bg-amber-50/50 border-amber-200">
+                        <h3 className="text-2xl font-black text-amber-800 mb-2">💬 Questions posées par d'autres élèves</h3>
+                        <p className="text-gray-600 font-semibold mb-4">Clique sur une question pour afficher l'astuce mathématique :</p>
+                        <div className="space-y-3">
+                            {FAQ_ELEVES.map((faq, idx) => (
+                                <div key={idx} className="bg-white rounded-2xl border-2 border-amber-200 overflow-hidden">
+                                    <button
+                                        onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
+                                        className="w-full text-left p-4 font-extrabold text-gray-800 flex justify-between items-center gap-4 hover:bg-amber-50/50 transition-colors"
+                                    >
+                                        <span>🙋 {faq.question}</span>
+                                        <span className="text-amber-600 text-xl shrink-0">{openFaq === idx ? '▲' : '▼'}</span>
+                                    </button>
+                                    {openFaq === idx && (
+                                        <div className="p-4 pt-0 text-indigo-950 font-bold bg-amber-50/30 border-t border-amber-100 animate-pop">
+                                            💡 <strong>Explication :</strong> {faq.explication}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </Card>
+                </div>
+            );
+        };
+
+        // --- ONGLET 2 : COMPRENDRE ET CALCULER (20 Exemples avec Ligne du Temps Pas-à-Pas) ---
+
+        const EXEMPLES_CONVERSION = [
+            { 
+                q: "1 heure = ? minutes", a: 60, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 minute.", val: "0 min" },
+                    { label: "+1 heure", desc: "On fait 1 grand bond de 1 heure. 1 heure = 60 minutes !", jump: "+60 min", val: "60 min" }
+                ]
+            },
+            { 
+                q: "1 heure et 30 minutes = ? minutes", a: 90, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 minute.", val: "0 min" },
+                    { label: "+1 heure", desc: "On fait d'abord un bond de 1 heure (+60 min).", jump: "+60 min", val: "60 min" },
+                    { label: "+30 min", desc: "On ajoute un bond de 30 minutes : 60 + 30 = 90 !", jump: "+30 min", val: "90 min" }
+                ]
+            },
+            { 
+                q: "2 heures = ? minutes", a: 120, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 minute.", val: "0 min" },
+                    { label: "+1 heure", desc: "Premier bond de 1 heure (+60 min).", jump: "+60 min", val: "60 min" },
+                    { label: "+1 heure", desc: "Deuxième bond de 1 heure : 60 + 60 = 120 !", jump: "+60 min", val: "120 min" }
+                ]
+            },
+            { 
+                q: "60 minutes = ? heure(s)", a: 1, type: "h",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 heure.", val: "0 h" },
+                    { label: "+60 min", desc: "Un paquet complet de 60 minutes forme exactement 1 heure !", jump: "+60 min", val: "1 h" }
+                ]
+            },
+            { 
+                q: "1 demi-heure (1/2 heure) = ? minutes", a: 30, type: "min",
+                steps: [
+                    { label: "Départ", desc: "1 heure complète = 60 minutes.", val: "0 min" },
+                    { label: "La moitié", desc: "On coupe 60 minutes en 2 parts égales : 60 ÷ 2 = 30 !", jump: "+30 min", val: "30 min" }
+                ]
+            },
+            { 
+                q: "1 quart d'heure (1/4 heure) = ? minutes", a: 15, type: "min",
+                steps: [
+                    { label: "Départ", desc: "1 demi-heure = 30 minutes.", val: "0 min" },
+                    { label: "Un quart", desc: "Un quart, c'est la moitié d'une demi-heure : 30 ÷ 2 = 15 !", jump: "+15 min", val: "15 min" }
+                ]
+            },
+            { 
+                q: "3 quarts d'heure (3/4 heure) = ? minutes", a: 45, type: "min",
+                steps: [
+                    { label: "Départ", desc: "1 quart d'heure = 15 minutes. On va faire 3 bonds de 15 !", val: "0 min" },
+                    { label: "1er quart", desc: "Premier bond de 15 minutes.", jump: "+15 min", val: "15 min" },
+                    { label: "2e quart", desc: "Deuxième bond de 15 minutes : 15 + 15 = 30.", jump: "+15 min", val: "30 min" },
+                    { label: "3e quart", desc: "Troisième bond de 15 minutes : 30 + 15 = 45 !", jump: "+15 min", val: "45 min" }
+                ]
+            },
+            { 
+                q: "1 journée = ? heures", a: 24, type: "h",
+                steps: [
+                    { label: "Minuit", desc: "Une journée commence à minuit (0 h).", val: "0 h" },
+                    { label: "Midi", desc: "La petite aiguille fait un premier tour complet d'horloge (+12 h).", jump: "+12 h", val: "12 h" },
+                    { label: "Minuit", desc: "Elle fait un deuxième tour complet : 12 + 12 = 24 heures !", jump: "+12 h", val: "24 h" }
+                ]
+            },
+            { 
+                q: "2 jours = ? heures", a: 48, type: "h",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 heure.", val: "0 h" },
+                    { label: "Jour 1", desc: "Premier bond d'une journée complète (+24 h).", jump: "+24 h", val: "24 h" },
+                    { label: "Jour 2", desc: "Deuxième bond d'une journée complète : 24 + 24 = 48 !", jump: "+24 h", val: "48 h" }
+                ]
+            },
+            { 
+                q: "1 semaine = ? jours", a: 7, type: "j",
+                steps: [
+                    { label: "Départ", desc: "On compte les jours du lundi au dimanche.", val: "0 j" },
+                    { label: "École", desc: "D'abord les 5 jours d'école (lundi à vendredi).", jump: "+5 j", val: "5 j" },
+                    { label: "Fin de sem.", desc: "Puis les 2 jours de fin de semaine : 5 + 2 = 7 jours !", jump: "+2 j", val: "7 j" }
+                ]
+            },
+            { 
+                q: "2 semaines = ? jours", a: 14, type: "j",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 jour.", val: "0 j" },
+                    { label: "Semaine 1", desc: "Premier bond d'une semaine (+7 jours).", jump: "+7 j", val: "7 j" },
+                    { label: "Semaine 2", desc: "Deuxième bond d'une semaine : 7 + 7 = 14 jours !", jump: "+7 j", val: "14 j" }
+                ]
+            },
+            { 
+                q: "1 année = ? mois", a: 12, type: "m",
+                steps: [
+                    { label: "Janvier", desc: "Une année commence en janvier.", val: "0 mois" },
+                    { label: "Mi-année", desc: "De janvier à juin, il s'écoule 6 mois.", jump: "+6 mois", val: "6 mois" },
+                    { label: "Décembre", desc: "De juillet à décembre, encore 6 mois : 6 + 6 = 12 mois !", jump: "+6 mois", val: "12 mois" }
+                ]
+            },
+            { 
+                q: "1 minute = ? secondes", a: 60, type: "s",
+                steps: [
+                    { label: "Départ", desc: "La trotteuse est tout en haut sur le 12.", val: "0 s" },
+                    { label: "1 tour", desc: "Quand la trotteuse fait un tour complet, 60 secondes ont passé !", jump: "+60 s", val: "60 s" }
+                ]
+            },
+            { 
+                q: "2 minutes = ? secondes", a: 120, type: "s",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 seconde.", val: "0 s" },
+                    { label: "1re min", desc: "Premier tour de trotteuse (+60 secondes).", jump: "+60 s", val: "60 s" },
+                    { label: "2e min", desc: "Deuxième tour de trotteuse : 60 + 60 = 120 secondes !", jump: "+60 s", val: "120 s" }
+                ]
+            },
+            { 
+                q: "1 heure et 10 minutes = ? minutes", a: 70, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 minute.", val: "0 min" },
+                    { label: "+1 heure", desc: "On transforme 1 heure en 60 minutes.", jump: "+60 min", val: "60 min" },
+                    { label: "+10 min", desc: "On fait un petit bond de 10 minutes : 60 + 10 = 70 !", jump: "+10 min", val: "70 min" }
+                ]
+            },
+            { 
+                q: "1 heure et 45 minutes = ? minutes", a: 105, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On part de 0 minute.", val: "0 min" },
+                    { label: "+1 heure", desc: "On transforme 1 heure en 60 minutes.", jump: "+60 min", val: "60 min" },
+                    { label: "+40 min", desc: "Pour faciliter le calcul, on ajoute d'abord 40 min : 60 + 40 = 100.", jump: "+40 min", val: "100 min" },
+                    { label: "+5 min", desc: "On ajoute les 5 dernières minutes : 100 + 5 = 105 !", jump: "+5 min", val: "105 min" }
+                ]
+            },
+            { 
+                q: "120 secondes = ? minutes", a: 2, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On cherche combien de paquets de 60 s il y a dans 120 s.", val: "0 s (0 min)" },
+                    { label: "1er paquet", desc: "Un premier bond de 60 secondes donne 1 minute.", jump: "+60 s", val: "60 s (1 min)" },
+                    { label: "2e paquet", desc: "Un deuxième bond de 60 s arrive à 120 s : cela fait 2 minutes !", jump: "+60 s", val: "120 s (2 min)" }
+                ]
+            },
+            { 
+                q: "3 heures = ? minutes", a: 180, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On va faire 3 grands bonds de 60 minutes.", val: "0 min" },
+                    { label: "+1 heure", desc: "1er bond : 60 minutes.", jump: "+60 min", val: "60 min" },
+                    { label: "+1 heure", desc: "2e bond : 60 + 60 = 120 minutes.", jump: "+60 min", val: "120 min" },
+                    { label: "+1 heure", desc: "3e bond : 120 + 60 = 180 minutes !", jump: "+60 min", val: "180 min" }
+                ]
+            },
+            { 
+                q: "90 minutes = 1 heure et ? minutes", a: 30, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On veut atteindre 90 minutes en commençant par les heures.", val: "0 min" },
+                    { label: "1 heure", desc: "On fait un grand bond de 1 heure (60 minutes).", jump: "+60 min", val: "60 min" },
+                    { label: "Le reste", desc: "Pour aller de 60 à 90, il manque un bond de 30 minutes !", jump: "+30 min", val: "90 min" }
+                ]
+            },
+            { 
+                q: "75 minutes = 1 heure et ? minutes", a: 15, type: "min",
+                steps: [
+                    { label: "Départ", desc: "On veut atteindre 75 minutes en commençant par les heures.", val: "0 min" },
+                    { label: "1 heure", desc: "On fait un grand bond de 1 heure (60 minutes).", jump: "+60 min", val: "60 min" },
+                    { label: "Le reste", desc: "Pour aller de 60 à 75, il manque un bond de 15 minutes !", jump: "+15 min", val: "75 min" }
+                ]
+            },
+        ];
+
+        // Utilitaire de formatage pour afficher les minutes et l'équivalent en heures/minutes
+        const formatTempsNoeud = (totalVal, unitMode) => {
+            if (unitMode === 's') {
+                const mins = Math.floor(totalVal / 60);
+                const secs = totalVal % 60;
+                return {
+                    main: `${totalVal} s`,
+                    sub: totalVal >= 60 ? (secs === 0 ? `${mins} min` : `${mins} min ${secs} s`) : ''
+                };
+            }
+            if (unitMode === 'h_day') {
+                const jours = Math.floor(totalVal / 24);
+                const heures = totalVal % 24;
+                return {
+                    main: `${totalVal} h`,
+                    sub: totalVal >= 24 ? (heures === 0 ? `${jours} jour${jours > 1 ? 's' : ''}` : `${jours} j ${heures} h`) : ''
+                };
+            }
+            if (unitMode === 'j') {
+                const sem = Math.floor(totalVal / 7);
+                const jours = totalVal % 7;
+                return {
+                    main: `${totalVal} j`,
+                    sub: totalVal >= 7 ? (jours === 0 ? `${sem} sem.` : `${sem} sem. ${jours} j`) : ''
+                };
+            }
+            if (unitMode === 'm') {
+                const ans = Math.floor(totalVal / 12);
+                const mois = totalVal % 12;
+                return {
+                    main: `${totalVal} mois`,
+                    sub: totalVal >= 12 ? (mois === 0 ? `${ans} an${ans > 1 ? 's' : ''}` : `${ans} an ${mois} m`) : ''
+                };
+            }
+            // Mode par défaut : minutes <-> heures
+            const h = Math.floor(totalVal / 60);
+            const m = totalVal % 60;
+            return {
+                main: `${totalVal} min`,
+                sub: totalVal === 0 ? 'Départ' : (h > 0 ? (m === 0 ? `${h} h` : `${h} h ${m} min`) : '')
+            };
+        };
+
+        // Composant Ligne du Temps Interactive avec Bonds Complets (+1h, +30min, +20min, +15min) et Flèches Jaunes Complètes
+        const LigneDuTempsInteractive = ({ unitMode = 'min', guidedSteps = null, guidedStepIndex = 0, onNextGuidedStep = null, resetKey = 0 }) => {
+            const [jumps, setJumps] = useState([]);
+            const [lastMessage, setLastMessage] = useState("Choisis un bond ci-dessous (+1 h, +30 min, +20 min ou +15 min) pour tracer une flèche jaune complète !");
+
+            // Réinitialiser la ligne lorsqu'on change d'exercice
+            useEffect(() => {
+                setJumps([]);
+                setLastMessage("Choisis un bond ci-dessous (+1 h, +30 min, +20 min ou +15 min) pour tracer une flèche jaune complète !");
+            }, [resetKey]);
+
+            // Définir les boutons de bonds disponibles selon l'unité de l'exercice
+            const getJumpButtons = () => {
+                if (unitMode === 's') {
+                    return [
+                        { amount: 60, label: '+ 1 min (60 s)', badge: '+60 s', primary: true },
+                        { amount: 30, label: '+ 30 s', badge: '+30 s', primary: true },
+                        { amount: 20, label: '+ 20 s', badge: '+20 s', primary: true },
+                        { amount: 15, label: '+ 15 s', badge: '+15 s', primary: true },
+                    ];
+                }
+                if (unitMode === 'h_day') {
+                    return [
+                        { amount: 24, label: '+ 1 jour (24 h)', badge: '+24 h', primary: true },
+                        { amount: 12, label: '+ 12 h', badge: '+12 h', primary: true },
+                        { amount: 6, label: '+ 6 h', badge: '+6 h', primary: false },
+                    ];
+                }
+                if (unitMode === 'j') {
+                    return [
+                        { amount: 7, label: '+ 1 sem. (7 j)', badge: '+7 j', primary: true },
+                        { amount: 5, label: '+ 5 j', badge: '+5 j', primary: false },
+                        { amount: 2, label: '+ 2 j', badge: '+2 j', primary: false },
+                    ];
+                }
+                if (unitMode === 'm') {
+                    return [
+                        { amount: 12, label: '+ 1 an (12 mois)', badge: '+12 mois', primary: true },
+                        { amount: 6, label: '+ 6 mois', badge: '+6 mois', primary: true },
+                        { amount: 3, label: '+ 3 mois', badge: '+3 mois', primary: false },
+                    ];
+                }
+                // Boutons principaux demandés : bonds complets de 1h, 30 min, 20 min, 15 min (+ 5 min en soutien)
+                return [
+                    { amount: 60, label: '+ 1 h (60 min)', badge: '+1 h (60 min)', primary: true },
+                    { amount: 30, label: '+ 30 min', badge: '+30 min', primary: true },
+                    { amount: 20, label: '+ 20 min', badge: '+20 min', primary: true },
+                    { amount: 15, label: '+ 15 min', badge: '+15 min', primary: true },
+                    { amount: 5, label: '+ 5 min', badge: '+5 min', primary: false },
+                ];
+            };
+
+            const jumpButtons = getJumpButtons();
+
+            const handleAddJump = (btn) => {
+                if (jumps.length >= 8) {
+                    setLastMessage("Tu as atteint le maximum de 8 bonds sur la ligne. Clique sur « Effacer » pour recommencer !");
+                    return;
+                }
+                const prevTotal = jumps.reduce((acc, j) => acc + j.amount, 0);
+                const newTotal = prevTotal + btn.amount;
+                const nextJumps = [...jumps, { amount: btn.amount, badge: btn.badge, total: newTotal }];
+                setJumps(nextJumps);
+
+                const formatted = formatTempsNoeud(newTotal, unitMode);
+                const eqText = formatted.sub && formatted.sub !== 'Départ' ? ` (soit ${formatted.sub})` : '';
+                setLastMessage(`Bond complet ${btn.badge} ajouté ! Tu es maintenant rendu à ${formatted.main}${eqText}.`);
+            };
+
+            const handleUndoJump = () => {
+                if (jumps.length === 0) return;
+                const nextJumps = jumps.slice(0, -1);
+                setJumps(nextJumps);
+                if (nextJumps.length === 0) {
+                    setLastMessage("Ligne remise à zéro. Choisis un bond pour commencer !");
+                } else {
+                    const last = nextJumps[nextJumps.length - 1];
+                    const formatted = formatTempsNoeud(last.total, unitMode);
+                    setLastMessage(`Dernier bond annulé. Tu es revenu à ${formatted.main}.`);
+                }
+            };
+
+            const handleReset = () => {
+                setJumps([]);
+                setLastMessage("Ligne du temps effacée. Fais un nouveau bond complet !");
+            };
+
+            // Construire la liste des points (noeuds) sur la ligne
+            const nodes = [{ total: 0, badge: null }];
+            jumps.forEach((j) => {
+                nodes.push({ total: j.total, badge: j.badge });
+            });
+
+            // Calcul des positions X proportionnelles avec largeur minimale garantie pour éviter tout chevauchement
+            const startX = 55;
+            const endX = 545;
+            const usableWidth = endX - startX;
+            const totalDuration = nodes[nodes.length - 1].total;
+
+            let nodePositions = [startX];
+            if (jumps.length > 0) {
+                const minWeight = Math.max(1, totalDuration * 0.14);
+                const weights = jumps.map((j) => Math.max(j.amount, minWeight));
+                const totalWeight = weights.reduce((a, b) => a + b, 0);
+                let cumulativeWeight = 0;
+                weights.forEach((w) => {
+                    cumulativeWeight += w;
+                    nodePositions.push(startX + (cumulativeWeight / totalWeight) * usableWidth);
+                });
+            }
+
+            // Déterminer si l'étape guidée peut être déclenchée
+            const hasMoreGuidedSteps = guidedSteps && guidedStepIndex < guidedSteps.length - 1;
+            const handleGuidedClick = () => {
+                if (!hasMoreGuidedSteps) return;
+                const nextStep = guidedSteps[guidedStepIndex + 1];
+                // Extraire la valeur numérique du bond guidé (ex: "+60 min" -> 60)
+                const match = nextStep.jump ? nextStep.jump.match(/\+(\d+)/) : null;
+                const amount = match ? parseInt(match[1], 10) : 60;
+                const badge = nextStep.jump || `+${amount}`;
+                const prevTotal = jumps.reduce((acc, j) => acc + j.amount, 0);
+                const newTotal = prevTotal + amount;
+                setJumps([...jumps, { amount, badge, total: newTotal }]);
+                setLastMessage(nextStep.desc);
+                if (onNextGuidedStep) onNextGuidedStep();
+            };
+
+            return (
+                <div className="bg-white rounded-2xl p-4 border-2 border-indigo-200 shadow-inner w-full my-4">
+                    {/* En-tête de la ligne du temps */}
+                    <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+                        <span className="text-sm font-black text-indigo-800 uppercase tracking-wider flex items-center gap-1.5">
+                            📏 Ligne du temps interactive ({jumps.length} bond{jumps.length > 1 ? 's' : ''})
+                        </span>
+                        <div className="flex flex-wrap gap-2">
+                            {jumps.length > 0 && (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={handleUndoJump}
+                                        className="text-xs font-extrabold px-3 py-1.5 rounded-full bg-amber-100 text-amber-900 hover:bg-amber-200 transition-colors"
+                                    >
+                                        ↩️ Annuler bond
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleReset}
+                                        className="text-xs font-extrabold px-3 py-1.5 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                                    >
+                                        ↺ Effacer
+                                    </button>
+                                </>
+                            )}
+                            {guidedSteps && hasMoreGuidedSteps && (
+                                <button
+                                    type="button"
+                                    onClick={handleGuidedClick}
+                                    className="text-xs font-extrabold px-3.5 py-1.5 rounded-full bg-indigo-100 text-primaire hover:bg-indigo-200 border border-indigo-300 transition-colors"
+                                >
+                                    💡 Bond guidé ({guidedStepIndex + 1}/{guidedSteps.length - 1})
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Boutons tactiles pour faire des bonds complets */}
+                    <div className="flex flex-wrap items-center justify-center gap-2 mb-3 bg-amber-50/80 p-2.5 rounded-2xl border border-amber-200">
+                        <span className="text-xs font-black text-amber-900 uppercase mr-1">Faire un bond :</span>
+                        {jumpButtons.map((btn, idx) => (
+                            <button
+                                key={idx}
+                                type="button"
+                                onClick={() => handleAddJump(btn)}
+                                className={`px-3.5 py-2 rounded-xl font-black text-sm shadow-sm transition-all transform active:scale-95 flex items-center gap-1 border-2 ${
+                                    btn.primary
+                                        ? 'bg-yellow-400 hover:bg-yellow-300 text-amber-950 border-yellow-500'
+                                        : 'bg-white hover:bg-yellow-50 text-amber-900 border-amber-300'
+                                }`}
+                            >
+                                <span>↷</span>
+                                <span>{btn.label}</span>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Dessin SVG de la ligne du temps et des flèches jaunes complètes */}
+                    <svg viewBox="0 0 600 155" className="w-full h-auto overflow-visible select-none">
+                        <defs>
+                            {/* Pointe de flèche jaune bien visible et pleine */}
+                            <marker
+                                id={`arrow-yellow-${resetKey}`}
+                                markerWidth="7"
+                                markerHeight="7"
+                                refX="5.5"
+                                refY="3.5"
+                                orient="auto"
+                            >
+                                <path d="M 0 0.5 L 6.5 3.5 L 0 6.5 z" fill="#EAB308" />
+                            </marker>
+                            <marker
+                                id={`arrow-axis-${resetKey}`}
+                                markerWidth="8"
+                                markerHeight="8"
+                                refX="6"
+                                refY="4"
+                                orient="auto"
+                            >
+                                <path d="M 0 1 L 7 4 L 0 7 z" fill="#94A3B8" />
+                            </marker>
+                        </defs>
+
+                        {/* Axe principal horizontal */}
+                        <line
+                            x1="20"
+                            y1="100"
+                            x2="580"
+                            y2="100"
+                            stroke="#94A3B8"
+                            strokeWidth="4"
+                            strokeLinecap="round"
+                            markerEnd={`url(#arrow-axis-${resetKey})`}
+                        />
+
+                        {/* Indication visuelle si aucun bond n'a encore été fait */}
+                        {jumps.length === 0 && (
+                            <text
+                                x="315"
+                                y="64"
+                                textAnchor="middle"
+                                fill="#94A3B8"
+                                fontSize="13"
+                                fontWeight="800"
+                            >
+                                Clique sur un bouton jaune ci-dessus pour dessiner ton premier bond !
+                            </text>
+                        )}
+
+                        {/* Flèches jaunes courbes complètes pour chaque bond */}
+                        {nodes.map((node, idx) => {
+                            if (idx === 0) return null;
+                            const x1 = nodePositions[idx - 1];
+                            const x2 = nodePositions[idx];
+                            const segWidth = x2 - x1;
+                            const midX = (x1 + x2) / 2;
+                            // Hauteur de l'arc proportionnelle à la largeur du bond pour un rendu naturel
+                            const ctrlY = Math.max(16, 78 - segWidth * 0.16);
+                            const peakY = (92 + ctrlY) / 2;
+                            // Point d'arrivée juste au-dessus du noeud cible pour que la flèche complète pointe dessus
+                            const pathD = `M ${x1} 92 Q ${midX} ${ctrlY} ${x2 - 2} 87`;
+                            const badgeWidth = Math.max(62, node.badge.length * 7.8 + 14);
+
+                            return (
+                                <g key={`yellow-jump-${idx}`}>
+                                    {/* Halo blanc sous la flèche jaune pour un contraste parfait */}
+                                    <path
+                                        d={pathD}
+                                        pathLength="100"
+                                        fill="none"
+                                        stroke="#FFFFFF"
+                                        strokeWidth="8"
+                                        strokeLinecap="round"
+                                        className="animate-arc"
+                                    />
+                                    {/* Flèche jaune complète (pathLength=100 garantit 100% du tracé sans coupure) */}
+                                    <path
+                                        d={pathD}
+                                        pathLength="100"
+                                        fill="none"
+                                        stroke="#EAB308"
+                                        strokeWidth="4.5"
+                                        strokeLinecap="round"
+                                        markerEnd={`url(#arrow-yellow-${resetKey})`}
+                                        className="animate-arc"
+                                    />
+                                    {/* Étiquette jaune du bond complet */}
+                                    <rect
+                                        x={midX - badgeWidth / 2}
+                                        y={peakY - 14}
+                                        width={badgeWidth}
+                                        height="22"
+                                        rx="11"
+                                        fill="#FEF08A"
+                                        stroke="#CA8A04"
+                                        strokeWidth="1.8"
+                                        className="animate-pop"
+                                    />
+                                    <text
+                                        x={midX}
+                                        y={peakY + 1}
+                                        textAnchor="middle"
+                                        fill="#713F12"
+                                        fontSize="11.5"
+                                        fontWeight="900"
+                                        className="animate-pop"
+                                    >
+                                        {node.badge}
+                                    </text>
+                                </g>
+                            );
+                        })}
+
+                        {/* Points (Noeuds) et valeurs graduées sur la ligne */}
+                        {nodes.map((node, idx) => {
+                            const cx = nodePositions[idx];
+                            const isLast = idx === nodes.length - 1;
+                            const formatted = formatTempsNoeud(node.total, unitMode);
+                            return (
+                                <g key={`node-${idx}`} className="animate-pop">
+                                    <circle
+                                        cx={cx}
+                                        cy="100"
+                                        r={isLast ? "9.5" : "7.5"}
+                                        fill={isLast ? "#10B981" : "#4F46E5"}
+                                        stroke="#FFFFFF"
+                                        strokeWidth="2.5"
+                                    />
+                                    <text
+                                        x={cx}
+                                        y="125"
+                                        textAnchor="middle"
+                                        fill={isLast ? "#047857" : "#1E1B4B"}
+                                        fontSize="13"
+                                        fontWeight="900"
+                                    >
+                                        {formatted.main}
+                                    </text>
+                                    {formatted.sub && (
+                                        <text
+                                            x={cx}
+                                            y="142"
+                                            textAnchor="middle"
+                                            fill="#4F46E5"
+                                            fontSize="11"
+                                            fontWeight="800"
+                                        >
+                                            ({formatted.sub})
+                                        </text>
+                                    )}
+                                </g>
+                            );
+                        })}
+                    </svg>
+
+                    {/* Bulle d'explication dynamique */}
+                    <div className="mt-2 bg-indigo-50 border-l-4 border-primaire p-3 rounded-r-xl text-sm md:text-base font-bold text-indigo-950">
+                        💡 {lastMessage}
+                    </div>
+                </div>
+            );
+        };
+
+        const TabComprendre = () => {
+            const [time, setTime] = useState({ h: 10, m: 15 });
+            const [currentEx, setCurrentEx] = useState(0);
+            const [currentStep, setCurrentStep] = useState(0);
+            const [inputValue, setInputValue] = useState('');
+            const [status, setStatus] = useState('idle'); // idle, correct, incorrect
+            const [score, setScore] = useState(0);
+
+            const exData = EXEMPLES_CONVERSION[currentEx];
+
+            // Déterminer l'unité de la ligne du temps pour l'exemple en cours
+            const getUnitModeForExample = (ex) => {
+                if (ex.q.includes('seconde')) return 's';
+                if (ex.q.includes('journée') || ex.q.includes('jours = ? heures')) return 'h_day';
+                if (ex.type === 'j') return 'j';
+                if (ex.type === 'm') return 'm';
+                return 'min';
+            };
+
+            const verifierReponse = () => {
+                if (parseInt(inputValue) === exData.a) {
+                    setStatus('correct');
+                    if (status !== 'correct') setScore(s => s + 1);
+                } else {
+                    setStatus('incorrect');
+                }
+            };
+
+            const nextEx = () => {
+                if (currentEx < EXEMPLES_CONVERSION.length - 1) {
+                    setCurrentEx(currentEx + 1);
+                    setCurrentStep(0);
+                    setInputValue('');
+                    setStatus('idle');
+                }
+            };
+
+            const prevEx = () => {
+                if (currentEx > 0) {
+                    setCurrentEx(currentEx - 1);
+                    setCurrentStep(0);
+                    setInputValue('');
+                    setStatus('idle');
+                }
+            };
+
+            const resetEx = () => {
+                setCurrentEx(0);
+                setCurrentStep(0);
+                setScore(0);
+                setInputValue('');
+                setStatus('idle');
+            };
+
+            return (
+                <div className="space-y-8 animate-pop">
+                    <div className="text-center">
+                        <h2 className="text-4xl font-black text-primaire mb-4">Manipule et Convertis ! ⚙️</h2>
+                        <p className="text-xl text-gray-600">Utilise l'horloge et fais des bonds complets sur la ligne du temps pour convertir !</p>
+                    </div>
+
+                    <div className="grid lg:grid-cols-12 gap-8 items-start">
+                        {/* Horloge Interactive (5 colonnes sur grand écran) */}
+                        <Card className="lg:col-span-5 flex flex-col items-center justify-center bg-blue-50">
+                            <h3 className="text-2xl font-bold text-blue-800 mb-6">L'Horloge Magique</h3>
+                            <Horloge hours={time.h} minutes={time.m} onTimeChange={(h, m) => setTime({h, m})} interactive={true} />
+                            <p className="mt-6 text-center text-blue-700 italic text-sm">
+                                Fais tourner les aiguilles avec ton doigt ou les boutons pour visualiser les heures et les minutes !
+                            </p>
+                        </Card>
+
+                        {/* Zone d'exercice 20 questions avec Ligne du temps interactive (7 colonnes sur grand écran) */}
+                        <Card className="lg:col-span-7 flex flex-col relative bg-amber-50">
+                            <div className="flex justify-between items-center mb-4">
+                                <div>
+                                    <h3 className="text-2xl font-bold text-amber-800">Les 20 Exemples</h3>
+                                    <p className="text-amber-700 font-semibold">Exemple {currentEx + 1} sur 20</p>
+                                </div>
+                                <div className="bg-white px-4 py-2 rounded-full font-black text-amber-600 shadow border border-amber-200">
+                                    Score : {score} / 20
+                                </div>
+                            </div>
+                            
+                            <div className="flex-grow flex flex-col justify-center items-center">
+                                <div className="text-2xl md:text-3xl font-black text-center text-gray-800 p-4 bg-white rounded-2xl shadow-sm w-full border-2 border-amber-200">
+                                    {exData.q}
+                                </div>
+
+                                {/* Ligne du temps interactive à bonds complets */}
+                                <LigneDuTempsInteractive 
+                                    unitMode={getUnitModeForExample(exData)}
+                                    guidedSteps={exData.steps}
+                                    guidedStepIndex={currentStep}
+                                    onNextGuidedStep={() => setCurrentStep(s => Math.min(s + 1, exData.steps.length - 1))}
+                                    resetKey={currentEx}
+                                />
+                                
+                                <div className="flex flex-wrap items-center justify-center gap-4 mt-2 mb-4">
+                                    <InputNum 
+                                        value={inputValue} 
+                                        onChange={setInputValue} 
+                                        placeholder="?" 
+                                    />
+                                    <span className="text-2xl font-bold text-gray-700">
+                                        {exData.type}
+                                    </span>
+                                    <Button variant="primary" onClick={verifierReponse}>Vérifier</Button>
+                                </div>
+
+                                <div className="min-h-[3rem] flex items-center justify-center w-full">
+                                    <Feedback status={status} />
+                                </div>
+                            </div>
+
+                            <div className="mt-4 pt-4 flex flex-wrap justify-between items-center gap-2 border-t-2 border-amber-200">
+                                <div className="flex gap-2">
+                                    <Button variant="outline" onClick={prevEx} disabled={currentEx === 0} className="text-sm py-2 px-4">
+                                        ⬅️ Préc.
+                                    </Button>
+                                    <Button variant="outline" onClick={resetEx} className="text-sm py-2 px-4">
+                                        Réinitialiser
+                                    </Button>
+                                </div>
+
+                                {currentEx < EXEMPLES_CONVERSION.length - 1 ? (
+                                    <Button 
+                                        variant={status === 'correct' ? "success" : "outline"} 
+                                        onClick={nextEx} 
+                                        className={`py-2 px-5 ${status === 'correct' ? 'animate-pop' : ''}`}
+                                    >
+                                        Suivant ➡️
+                                    </Button>
+                                ) : (
+                                    status === 'correct' && (
+                                        <div className="text-secondaire font-black animate-pop text-lg">🎉 Tous les exemples réussis !</div>
+                                    )
+                                )}
+                            </div>
+                        </Card>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- ONGLET 3 : DÉFIS DU TEMPS (5 Problèmes isolés) ---
+
+        const DEFIS_LOGIQUE = [
+            {
+                id: 1,
+                titre: "Le trajet pour l'école",
+                texte: "Simon part de la maison à 8h00. Cela lui prend 15 minutes à la marche pour se rendre à l'école. À quelle heure arrive-t-il ?",
+                h: 8, m: 15
+            },
+            {
+                id: 2,
+                titre: "La cuisson du gâteau",
+                texte: "Mia met son gâteau au four à 14h30. La recette indique que la cuisson dure 45 minutes. À quelle heure le gâteau sera-t-il prêt ?",
+                h: 15, m: 15
+            },
+            {
+                id: 3,
+                titre: "Le film au cinéma",
+                texte: "Un film commence à 18h15. Il a une durée totale de 1h30. À quelle heure le film va-t-il se terminer ?",
+                h: 19, m: 45
+            },
+            {
+                id: 4,
+                titre: "L'heure de la récréation",
+                texte: "La récréation du matin commence à 10h15 et se termine à 10h35. Quelle est la durée de la récréation (en minutes) ?",
+                type: 'duree', ans: 20
+            },
+            {
+                id: 5,
+                titre: "Le retard du bus",
+                texte: "Le bus devait passer à 7h50, mais il a 25 minutes de retard. À quelle heure va-t-il finalement passer ?",
+                h: 8, m: 15
+            }
+        ];
+
+        const DefiCard = ({ defi }) => {
+            const [valH, setValH] = useState('');
+            const [valM, setValM] = useState('');
+            const [valDuree, setValDuree] = useState('');
+            const [status, setStatus] = useState('idle');
+            const [showTimeline, setShowTimeline] = useState(false);
+
+            const verifier = () => {
+                if (defi.type === 'duree') {
+                    if (parseInt(valDuree) === defi.ans) setStatus('correct');
+                    else setStatus('incorrect');
+                } else {
+                    if (parseInt(valH) === defi.h && parseInt(valM) === defi.m) setStatus('correct');
+                    else setStatus('incorrect');
+                }
+            };
+
+            const isDuree = defi.type === 'duree';
+
+            return (
+                <Card className={`border-l-8 ${status === 'correct' ? 'border-l-secondaire' : 'border-l-primaire'} mb-6 transition-all duration-300`}>
+                    <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+                        <h3 className="text-xl font-bold text-gray-800">Défi {defi.id} : {defi.titre}</h3>
+                        <button
+                            type="button"
+                            onClick={() => setShowTimeline(!showTimeline)}
+                            className="text-xs font-extrabold px-3.5 py-1.5 rounded-full bg-indigo-100 text-primaire hover:bg-indigo-200 transition-colors"
+                        >
+                            {showTimeline ? '✖ Fermer la ligne du temps' : '📏 Aide : Ligne du temps'}
+                        </button>
+                    </div>
+                    <p className="text-lg text-gray-700 mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">{defi.texte}</p>
+
+                    {showTimeline && (
+                        <LigneDuTempsInteractive unitMode="min" resetKey={defi.id} />
+                    )}
+                    
+                    <div className="flex flex-col md:flex-row md:items-center gap-4 justify-between">
+                        <div className="flex items-center gap-3">
+                            <span className="font-bold text-gray-600">Ta réponse :</span>
+                            {isDuree ? (
+                                <div className="flex items-center gap-2">
+                                    <InputNum value={valDuree} onChange={setValDuree} placeholder="?" w="w-20" />
+                                    <span className="font-bold text-lg">minutes</span>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2">
+                                    <InputNum value={valH} onChange={setValH} placeholder="H" w="w-20" />
+                                    <span className="font-bold text-xl h-full">:</span>
+                                    <InputNum value={valM} onChange={setValM} placeholder="MIN" w="w-20" />
+                                </div>
+                            )}
+                        </div>
+                        
+                        <div className="flex items-center gap-4">
+                            <Button variant={status === 'correct' ? 'success' : 'primary'} onClick={verifier} className="py-2 px-6">
+                                {status === 'correct' ? 'Vérifié !' : 'Vérifier'}
+                            </Button>
+                        </div>
+                    </div>
+                    
+                    <Feedback status={status} />
+                </Card>
+            );
+        };
+
+        const TabDefis = () => {
+            const [currentIndex, setCurrentIndex] = useState(0);
+
+            const nextDefi = () => {
+                if (currentIndex < DEFIS_LOGIQUE.length - 1) setCurrentIndex(currentIndex + 1);
+            };
+
+            const prevDefi = () => {
+                if (currentIndex > 0) setCurrentIndex(currentIndex - 1);
+            };
+
+            const defi = DEFIS_LOGIQUE[currentIndex];
+
+            return (
+                <div className="space-y-6 animate-pop">
+                    <div className="text-center mb-8">
+                        <h2 className="text-4xl font-black text-secondaire mb-4">Défis du Temps 🏆</h2>
+                        <p className="text-xl text-gray-600">Sors ton horloge matérielle ou utilise ta tête pour résoudre ces problèmes !</p>
+                    </div>
+
+                    <div className="max-w-3xl mx-auto">
+                        <DefiCard key={defi.id} defi={defi} />
+                        
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-8 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                            <Button 
+                                variant="outline" 
+                                onClick={prevDefi} 
+                                disabled={currentIndex === 0}
+                            >
+                                ⬅️ Précédent
+                            </Button>
+                            
+                            <span className="text-xl font-bold text-gray-500">
+                                Défi {currentIndex + 1} / {DEFIS_LOGIQUE.length}
+                            </span>
+                            
+                            <Button 
+                                variant="outline" 
+                                onClick={nextDefi} 
+                                disabled={currentIndex === DEFIS_LOGIQUE.length - 1}
+                            >
+                                Suivant ➡️
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- APPLICATION PRINCIPALE ---
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('explication');
+
+            return (
+                <div className="max-w-6xl mx-auto bg-white/40 backdrop-blur-sm rounded-[3rem] shadow-2xl p-4 md:p-8 min-h-[90vh] border border-white">
+                    {/* En-tête */}
+                    <header className="text-center mb-10">
+                        <h1 className="text-5xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-primaire to-accent py-2">
+                            La Mesure du Temps
+                        </h1>
+                        <p className="text-xl md:text-2xl font-bold text-gray-600 mt-2">Apprendre, Calculer et Jouer !</p>
+                    </header>
+
+                    {/* Navigation */}
+                    <nav className="flex flex-wrap justify-center gap-2 md:gap-4 mb-10 bg-white p-2 rounded-full shadow-md max-w-fit mx-auto border border-gray-100">
+                        <button 
+                            onClick={() => setActiveTab('explication')}
+                            className={`px-6 py-3 rounded-full font-bold text-lg transition-all ${activeTab === 'explication' ? 'bg-primaire text-white shadow-lg scale-105' : 'text-gray-500 hover:bg-gray-100'}`}
+                        >
+                            📖 Explications
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('comprendre')}
+                            className={`px-6 py-3 rounded-full font-bold text-lg transition-all ${activeTab === 'comprendre' ? 'bg-accent text-white shadow-lg scale-105' : 'text-gray-500 hover:bg-gray-100'}`}
+                        >
+                            ⚙️ Comprendre & Calculer
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('defis')}
+                            className={`px-6 py-3 rounded-full font-bold text-lg transition-all ${activeTab === 'defis' ? 'bg-secondaire text-white shadow-lg scale-105' : 'text-gray-500 hover:bg-gray-100'}`}
+                        >
+                            🏆 Défis du temps
+                        </button>
+                    </nav>
+
+                    {/* Contenu de l'onglet actif */}
+                    <main className="min-h-[500px]">
+                        {activeTab === 'explication' && <TabExplication />}
+                        {activeTab === 'comprendre' && <TabComprendre />}
+                        {activeTab === 'defis' && <TabDefis />}
+                    </main>
+                    
+                    <footer className="mt-16 text-center text-gray-400 font-bold">
+                        Créé pour les mathématiciens du 2e Cycle 🚀
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
